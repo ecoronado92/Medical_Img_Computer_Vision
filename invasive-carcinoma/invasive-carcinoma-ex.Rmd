@@ -1,0 +1,78 @@
+---
+title: "Predicting Ductal Invasive Carcinomas via CNN"
+author: "Eduardo Coronado"
+date: "5/22/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+suppressMessages(library(tidyverse))
+library(keras)
+library(here)
+library(curl)
+library(png)
+suppressMessages(library(filesstrings))
+suppressMessages(library(imager))
+
+
+# Check if data directory exists in current repo, direct user to
+# troubleshoot page in case they need to download the data
+subdir <- "invasive-carcinoma"
+data_dir <- file.path(here(), subdir, "data_idc")
+tmp_dir <- file.path(here(), subdir, "tmp")
+files_to_keep <-60000 # Define number of patches to keep
+
+if (!file.exists(data_dir)){
+  # Download original data zip file - size 1.6 Gb
+  download.file("http://andrewjanowczyk.com/wp-static/IDC_regular_ps50_idx5.zip",
+                destfile = file.path(here(), subdir, "tmp.zip"))
+  
+  # Unzip file
+  unzip(file.path(here(), subdir, "tmp.zip"), exdir = tmp_dir )
+  
+  # Take first n 50x50 image patches
+  tmp_zero <- list.files(tmp_dir, pattern = "*class0.png", recursive = TRUE,
+                           full.names = TRUE)[1:files_to_keep]
+  tmp_one <- list.files(tmp_dir, pattern = "*class1.png", recursive = TRUE,
+                          full.names = TRUE)[1:files_to_keep]
+  
+  # Create data directory for 60k patches
+  dir.create(data_dir)
+  dir.create(file.path(data_dir, "0"))
+  dir.create(file.path(data_dir, "1"))
+  
+  # Moves 60k patches to new dirs
+  file.move(tmp_zero[1:60000], destinations =file.path(data_dir, "0") )
+  file.move(tmp_one[1:60000], destinations =file.path(data_dir, "1") )
+  
+  # Clean up
+  dir.remove(tmp_dir)
+  file.remove(file.path(here(), subdir, "tmp.zip"))
+  rm(tmp_zero)
+  rm(tmp_one)
+}
+
+```
+
+ **_Example and code based on:_**
+ 
+* Baruah, Bikram, and Bikram Baruah. “Predicting Invasive Ductal Carcinoma Using Convolutional Neural Network (CNN) in Keras.” Towards Data Science, Towards Data Science, 3 Jan. 2019, towardsdatascience.com/predicting-invasive-ductal-carcinoma-using-convolutional-neural-network-cnn-in-keras-debb429de9a6. 
+
+* Choosehappy. “Use Case 6: Invasive Ductal Carcinoma (IDC) Segmentation.” Andrew Janowczyk, 5 Jan. 2018, www.andrewjanowczyk.com/use-case-6-invasive-ductal-carcinoma-idc-segmentation/.
+
+```{r}
+class_zero <- list.files(data_dir, pattern = "*class0.png", recursive = TRUE, 
+                         full.names = TRUE)
+class_one <-  list.files(data_dir, pattern = "*class1.png", recursive = TRUE, 
+                         full.names = TRUE)
+
+
+img_width = img_height <- 50
+
+
+test = readPNG(class_zero, target_size = c(img_width, img_height)) #%>% 
+  image_to_array(.) %>% 
+  keras::k_expand_dims(., axis = 1) * (1/255)
+
+```

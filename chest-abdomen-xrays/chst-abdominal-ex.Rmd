@@ -1,0 +1,173 @@
+---
+title: "Classification of Chest/Abdominal X-Rays via CNN"
+author: "Eduardo Coronado"
+date: "5/13/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+suppressMessages(library(tidyverse))
+library(keras)
+library(here)
+suppressMessages(library(imager))
+source("../create_img_folder_struct.R")
+
+# Check if data directory exists in current repo, direct user to
+# troubleshoot page in case they need to download the data
+subdir <- "chest-abdomen-xrays"
+data_dir <- file.path(here(), subdir, "data")
+zip_file <- list.files(file.path(here(), subdir) ,pattern = "*.zip") 
+
+extract_imgs(data_dir, zip_file) # Helper script
+
+
+```
+
+ _Example and code based on:_  
+ Lakhani, Paras, et al. **"Hello world deep learning in medical imaging."** _Journal of digital imaging_ 31.3 (2018): 283-289.
+
+### I. Building the Model 
+
+#### Initial Steps
+Before building a Convolutional Neural Network we must first specify a couple of parameters such as our image sizes, the number of images to be processed at a time (`batch`), and number of passes through training data (`epochs`). Additionally, we need to specify the location of our data directory. Later we will divide these into training and test sets. 
+
+```{r}
+# Image dimensions in pixels
+img_width = img_height <- 299
+
+# Data director, it has two subfolders (i.e. chest and abdomen)
+all_dat_dir <- file.path(data_dir, "ALL_DAT")
+
+# List number of samples via list.files() fcn
+# use recursive = TRUE to go into subfulders
+all_samples <- length(list.files(all_dat_dir, recursive = TRUE)) 
+
+#epochs = number of passes through training data
+# batch_size = number images processed at same time
+epochs <- 20L
+batch_size <- 5
+```
+
+Given the accuracy of a CNN depends heavily on the amount of data it has been trained on, we will use the Inception V3 model as our base model (this is pre-loaded in `keras`). Given we only have small image data set, we can take advantage of Inception V3's previoulsy optimized/trained weights g on a large image data set (`imagenet`).
+
+```{r base_model}
+# Inception V3 CNN input shape must be (299, 299, 3)
+in_shape <- c(img_width, img_height, 3)
+
+# build the Inception V3 CNN model with pre-trained weights from ImageNet
+# and remove top fully connected layers by with include_top=False 
+base_model <- application_inception_v3(include_top = FALSE, weights='imagenet', 
+                                      input_shape = in_shape)
+
+```
+ 
+#### Transfer Learning and Adding Randomized Layers 
+  
+Although, the Inception V3 model was trained to classify color images with over 1,000 classes we can still use the basic framework for X-Ray classification. In other words, we're implementing **Transfer Learning**  (i.e. using pre-trained network as a base).  
+For example, we first remove Inception V3's top fully connected layers that was originally intended to address the 1,000-class problem (*freezing layers*). Then, we add some randomized layers and train them with our data on top of the pre-trained structure at a slow learning rate.  
+  
+(*Note*: There are many other transfer learning strategies other than the one depicted above)
+
+```{r transfer_learning}
+# build a classifier model to place on top of the Inception V3 model
+# This layer includes a global average pooling layer and a fully connected layer with 256 nodes
+# with a dropout layer and sigmoid activation for output
+model_top <- keras_model_sequential()
+model_top %>% unlist(base_model$output_shape[2:4]) %>% 
+  layer_global_average_pooling_2d(data_format= NULL, trainable = TRUE) %>% 
+  layer_dense(units = 256, activation = "relu", trainable = TRUE ) %>% 
+  layer_dropout(rate = 0.5, trainable = TRUE ) %>% 
+  layer_dense(units = 1, activation = "sigmoid", trainable = TRUE)
+
+model <- keras_model(inputs = base_model$input, outputs = model_top(base_model$output))
+```
+
+After adding this top layer to the Inception V3 model, we compile it using the built-in Adam optimizer (`optimizer_adam`). There are many other gradient descent optimizers in `keras` but here we will use Adam as an example with commonly used settings. However, we reduced the learning rate (`lr`) to allow for transfer learning as shown below.  
+
+```{r compile_model}
+# Compile model using Adam optimizer with common values and binary cross entropy loss
+# since we are only looking at two classes (chest and abdominal)
+# We use a low learning rate (lr) for transfer learning
+model %>% compile(optimizer = optimizer_adam(lr=0.0001, 
+                                             beta_1=0.9, 
+                                             beta_2=0.999, 
+                                             epsilon=1e-08, decay=0.0),
+                  loss = "binary_crossentropy",
+                  metrics= "accuracy")
+
+# Uncomment line below if you want to review model layers, outputs and parameters
+#summary(model)
+```
+
+### II) Image Preprocessing and Augmentation  
+To avoid overfitting based on the training data we use some image augmentation techniques such as rotations, translations, zooming, shearing, and flipping. `keras` has a built-in `image_data_generator` function that can perform these augmentations "on-the-fly" or "on-the-go". Additionally, given we will want to evaluate how well our model performs we can split our images into train and validation sets. This can be done via the `validation_split` parameter that allows us to specify the amount of data to set aside as test data.
+
+After defining the data augementation procedures, we then create train and test objects that will grab the images from a specified directory (`flow_images_from_directory`), perform these augmentations on the images and present them to the model in batches.
+
+```{r data_augment}
+# Data augmentation options via the keras image_data_generator
+
+# Preprocess - Largest pixel value is 255, thus x/255 rescales values between 0-1
+# On-the-fly augmentation options for generator
+datagen <- image_data_generator(rescale = 1/255, # Rescale pixel values to 0-1 to help CNN
+                                      shear_range = 0.2, # 0-1 range for shearing
+                                      zoom_range = 0.2, # 0-1 range for zoom
+                                      rotation_range = 20, # 0-180 range for rotation
+                                      width_shift_range = 0.2, # 0-1 range horizontal translation
+                                      height_shift_range = 0.2, # 0-1 range vertical translation
+                                      horizontal_flip = TRUE, 
+                                validation_split = 0.15 # set aside 15% of images as test set
+                                )
+
+
+
+# Specify data directory, batch size, image sizes and class mode to be passed
+# into generator
+# Class mode is set to 'binary' for our 2-class problem
+# This generator will randomly shuffle and present images in batches to the network 
+train_generator <- flow_images_from_directory(directory = all_dat_dir, 
+                                              generator = datagen,
+                                              target_size = c(img_height, img_width),
+                                              batch_size = batch_size,
+                                              class_mode = "binary", seed = 1, 
+                                              subset = "training" ) # use training subset
+
+
+test_generator <- flow_images_from_directory(directory = all_dat_dir,
+                                             generator = datagen,
+                                             target_size = c(img_height, img_width),
+                                             batch_size = batch_size,
+                                             class_mode = "binary", seed = 1, 
+                                             subset = "validation") # use test subset
+
+```
+
+### III) Model Training
+
+After defining the train and test generators we will now train the model using the `fit_generator` function and storing it in the history (`hist`) variable. This takes in the training and test images, the number of epochs we wish the model to learn from, and the steps per epoch (i.e. number of images/batch size). For each epoch, the cross-entropy loss and accuracy are computed for the training and test (validation) data. Here, the training time depends on computing power (CPUs, RAM memory, GPUs, etc), number of epochs and steps per epoch. For example, it takes about 10 minutes to train this model using a Mac OS with 16 Gb RAM and 2-4 CPUs.  
+
+```{r model_train, cache = TRUE, message=TRUE}
+# Use training data plus data generator to fine-tune pre-trained Inception V3 model 
+# Specify steps per epoch (number of images/batch_size) 
+hist <- model %>% 
+  fit_generator(train_generator,
+                steps_per_epoch = as.integer((all_samples*.85)/batch_size), 
+                epochs = epochs, 
+                validation_data = test_generator,
+                validation_steps = as.integer((all_samples*.15)/batch_size),
+                verbose = 1 # verbose = 2, one line per epoch
+                )
+
+```
+
+After training the model we can plot and store the accuracy and loss metrics in a dataframe. As we can observe, the accuracy of both the training and validation (test) data quickly reaches to $>90\%$ in just over 5 epochs and overall the accuracy tends to be higher on the validation set than on the training set. This helps show that the model hasn't been overfitted. However, we must be careful as the sample size of our train and test data isn't large enought to assume this is true. To assess the performance of the model we would need to either build an ROC plot or perform a k-fold cross validation to find the average accuracy of `k` folds.  
+
+```{r plot_metrics}
+#Save accuracy/loss metrics as dataframe
+hist_df <- hist$metrics %>% as_data_frame()
+
+# Use generic plot function to plot accuracy/loss metrics in ggplot
+plot(hist)
+
+```
