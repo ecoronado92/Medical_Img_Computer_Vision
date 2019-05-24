@@ -11,17 +11,18 @@ suppressMessages(library(tidyverse))
 library(keras)
 library(here)
 library(curl)
-library(png)
-suppressMessages(library(filesstrings))
+library(knitr)
+suppressMessages(library(ROSE))
 suppressMessages(library(imager))
-
+suppressMessages(library(filesstrings))
+set.seed(1)
 
 # Check if data directory exists in current repo, direct user to
 # troubleshoot page in case they need to download the data
 subdir <- "invasive-carcinoma"
 data_dir <- file.path(here(), subdir, "data_idc")
 tmp_dir <- file.path(here(), subdir, "tmp")
-files_to_keep <-60000 # Define number of patches to keep
+files_to_keep <- 60000
 
 if (!file.exists(data_dir)){
   # Download original data zip file - size 1.6 Gb
@@ -29,13 +30,17 @@ if (!file.exists(data_dir)){
                 destfile = file.path(here(), subdir, "tmp.zip"))
   
   # Unzip file
-  unzip(file.path(here(), subdir, "tmp.zip"), exdir = tmp_dir )
+  unzip(file.path(here(), subdir, "tmp.zip"), exdir = tmp_dir)
   
   # Take first n 50x50 image patches
-  tmp_zero <- list.files(tmp_dir, pattern = "*class0.png", recursive = TRUE,
-                           full.names = TRUE)[1:files_to_keep]
-  tmp_one <- list.files(tmp_dir, pattern = "*class1.png", recursive = TRUE,
-                          full.names = TRUE)[1:files_to_keep]
+  tmp_patches <- list.files(tmp_dir, pattern = "*.png", recursive = TRUE,
+                            full.names = TRUE)
+  
+  r_idxes <- sample(1:length(tmp_patches), files_to_keep)
+  
+  tmp_patches <- tmp_patches[r_idxes] 
+  tmp_zero <- str_subset(tmp_patches, ".*class0.png")
+  tmp_one <- str_subset(tmp_patches, ".*class1.png")
   
   # Create data directory for 60k patches
   dir.create(data_dir)
@@ -43,14 +48,15 @@ if (!file.exists(data_dir)){
   dir.create(file.path(data_dir, "1"))
   
   # Moves 60k patches to new dirs
-  file.move(tmp_zero[1:60000], destinations =file.path(data_dir, "0") )
-  file.move(tmp_one[1:60000], destinations =file.path(data_dir, "1") )
+  file.move(tmp_zero, destinations =file.path(data_dir, "0"))
+  file.move(tmp_one, destinations =file.path(data_dir, "1") )
   
   # Clean up
   dir.remove(tmp_dir)
   file.remove(file.path(here(), subdir, "tmp.zip"))
   rm(tmp_zero)
   rm(tmp_one)
+  rm(tmp_patches)
 }
 
 ```
@@ -62,17 +68,82 @@ if (!file.exists(data_dir)){
 * Choosehappy. “Use Case 6: Invasive Ductal Carcinoma (IDC) Segmentation.” Andrew Janowczyk, 5 Jan. 2018, www.andrewjanowczyk.com/use-case-6-invasive-ductal-carcinoma-idc-segmentation/.
 
 ```{r}
+image_patches <- list.files(data_dir, pattern = "*.png", recursive = TRUE,
+                             full.names = TRUE)
+
 class_zero <- list.files(data_dir, pattern = "*class0.png", recursive = TRUE, 
                          full.names = TRUE)
-class_one <-  list.files(data_dir, pattern = "*class1.png", recursive = TRUE, 
+class_one  <-  list.files(data_dir, pattern = "*class1.png", recursive = TRUE, 
                          full.names = TRUE)
 
+process_images <-  function(lower_idx, upper_idx){
+  img_width = img_height <- 50
+  channels <- 3
+  p <- progress_estimated(upper_idx)
+  
+  X <- array(NA, dim= c(upper_idx, img_width, img_height, channels))
+  y <- rep(NA, upper_idx)
+  
+  for (i in lower_idx:upper_idx){
+    X[i,,,] <- image_load(image_patches[i], target_size = c(img_width, img_height), 
+                     interpolation = "bicubic") %>% 
+    image_to_array(.) * (1/255)
+  
+    if(image_patches[i] %in% class_zero){
+      y[i] <- "0"
+    } else {
+      y[i] <- "1"
+    }
+    
+    p$tick()$print()
+  }
+  
+  return(list(X,y))
+  
+}
 
-img_width = img_height <- 50
+
+x_y <- process_images(1,length(image_patches))
+
+X <- x_y[[1]]
+Y <- x_y[[2]]
+
+kable(table(Y) %>% t()) # Imbalance
+
+# Train / Test split
+samp_size <- dim(X)[1] # 60,000
+set.seed(2)
+train <- sample(seq_len(samp_size), size = 0.85 * samp_size) # 15-85 test/train split
+
+X_train <- X[train,,,]
+X_test  <- X[-train,,,]
+y_train <- Y[train]
+y_test  <- Y[-train]
+
+# Clean-up
+rm(X)
+rm(Y)
+rm(x_y)
+rm(image_patches)
 
 
-test = readPNG(class_zero, target_size = c(img_width, img_height)) #%>% 
-  image_to_array(.) %>% 
-  keras::k_expand_dims(., axis = 1) * (1/255)
+# One hot encode
+nobs_train <- dim(X_train)[1]
+nobs_test  <- dim(X_test)[1]
+
+X_train_shape <- (dim(X_train)[2]^2) * dim(X_train)[4]
+X_test_shape  <- (dim(X_test)[2]^2) * dim(X_test)[4]
+
+X_train <- array_reshape(X_train, 
+                         dim = c(nobs_train, X_train_shape)) %>% as_tibble()
+X_test  <- array_reshape(X_test, 
+                         dim = c(nobs_test, X_test_shape)) %>%  as_tibble()
+
+
+test_df <- bind_cols(y = factor(y_test), X_test)
+test_df <- ovun.sample(y ~., data = test_df, method = "both", seed = 1)$data
+
+train_df <- bind_cols(y = factor(y_train), X_train)
+train_df <- ovun.sample(y ~., data = train_df, method = "both", seed = 1)$data
 
 ```
