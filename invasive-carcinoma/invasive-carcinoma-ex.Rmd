@@ -22,12 +22,12 @@ set.seed(1)
 subdir <- "invasive-carcinoma"
 data_dir <- file.path(here(), subdir, "data_idc")
 tmp_dir <- file.path(here(), subdir, "tmp")
-files_to_keep <- 60000
+files_to_keep <- 100000
 
 if (!file.exists(data_dir)){
   # Download original data zip file - size 1.6 Gb
-  download.file("http://andrewjanowczyk.com/wp-static/IDC_regular_ps50_idx5.zip",
-                destfile = file.path(here(), subdir, "tmp.zip"))
+ # download.file("http://andrewjanowczyk.com/wp-static/IDC_regular_ps50_idx5.zip",
+                #destfile = file.path(here(), subdir, "tmp.zip"))
   
   # Unzip file
   unzip(file.path(here(), subdir, "tmp.zip"), exdir = tmp_dir)
@@ -36,9 +36,10 @@ if (!file.exists(data_dir)){
   tmp_patches <- list.files(tmp_dir, pattern = "*.png", recursive = TRUE,
                             full.names = TRUE)
   
-  r_idxes <- sample(1:length(tmp_patches), files_to_keep)
+  #r_idxes <- sample(1:length(tmp_patches), files_to_keep)
   
-  tmp_patches <- tmp_patches[r_idxes] 
+  #tmp_patches <- tmp_patches[r_idxes]
+  tmp_patches <- tmp_patches[1:files_to_keep] 
   tmp_zero <- str_subset(tmp_patches, ".*class0.png")
   tmp_one <- str_subset(tmp_patches, ".*class1.png")
   
@@ -53,7 +54,7 @@ if (!file.exists(data_dir)){
   
   # Clean up
   dir.remove(tmp_dir)
-  file.remove(file.path(here(), subdir, "tmp.zip"))
+  #file.remove(file.path(here(), subdir, "tmp.zip"))
   rm(tmp_zero)
   rm(tmp_one)
   rm(tmp_patches)
@@ -142,14 +143,14 @@ samp_df <- test_df %>%
   group_by(y) %>% 
   summarize(test_original = n())
 
-test_df <- ovun.sample(y ~., data = test_df, method = "both", seed = 1)$data
+test_df <- ovun.sample(y ~., data = test_df, method = "under", seed = 1)$data
 samp_df <- bind_cols(samp_df, over_und_test = as.integer(table(test_df$y)))
 rm(X_test)
 
 train_df <- bind_cols(y = factor(y_train), X_train)
 samp_df  <- bind_cols(samp_df, train_original = as.integer(table(train_df$y)))
 
-train_df <- ovun.sample(y ~., data = train_df, method = "both", seed = 1)$data
+train_df <- ovun.sample(y ~., data = train_df, method = "under", seed = 1)$data
 samp_df <- bind_cols(samp_df, over_und_train = as.integer(table(train_df$y)))
 rm(X_train)
 
@@ -159,30 +160,57 @@ kable(samp_df)
 ## Model
 batch_size <- 256
 epochs <- 80
-num_classes <- 1
+num_classes <- 2
 
 model <- keras_model_sequential()
 model %>% layer_conv_2d(filters = 32, kernel_size = c(3,3), 
-                        activation = "relu",
-                        input_shape = c(50, 50, 3)) %>% 
+                        activation = "relu", input_shape = c(50, 50, 3)) %>% 
           layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
           layer_conv_2d(64, kernel_size = c(3, 3), activation = "relu") %>% 
           layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
-          layer_conv_2d(128, kernel_size = c(3, 3), activation = "relu") %>% 
-          layer_conv_2d(256, kernel_size = c(3, 3), activation = "relu") %>% 
+          layer_conv_2d(128, kernel_size = c(3, 3), activation = "relu") %>%
+          layer_conv_2d(256, kernel_size = c(3, 3), activation = "relu") %>%
+          #layer_dropout(rate = 0.5) %>% 
           layer_flatten() %>% 
           layer_dropout(rate = 0.5) %>% 
           layer_dense(128, activation = "relu") %>% 
+          layer_dropout(rate = 0.5) %>% 
+          layer_dense(128, activation = "relu") %>%
           layer_dense(num_classes, activation = "sigmoid")
+
+# model %>% layer_conv_2d(filters = 32, kernel_size = c(3,3), 
+#                         activation = "relu", input_shape = c(50, 50, 3), padding = "same", 
+#                         kernel_initializer = "he_normal") %>%
+#           layer_conv_2d(32, kernel_size = c(3,3), activation = "relu") %>% 
+#           layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+#           layer_dropout(rate = 0.5) %>% 
+#           layer_conv_2d(64, kernel_size = c(3, 3), activation = "relu", padding = "same") %>%
+#           layer_conv_2d(64, kernel_size = c(3, 3), activation = "relu") %>%
+#           layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+#           layer_dropout(rate = 0.5) %>%
+#           layer_flatten() %>% 
+#           layer_dense(512, activation = "relu") %>%
+#         layer_batch_normalization() %>% 
+#           layer_dropout(rate = 0.5) %>% 
+#           layer_dense(num_classes, activation = "sigmoid")
+
+
+#model %>% layer_conv_2d(filters = 32, kernel_size = c(3,3), 
+#                        activation = "relu", input_shape = c(50, 50, 3)) %>%
+#          layer_conv_2d(64, kernel_size = c(3, 3), activation = "relu") %>%
+#          layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+#          layer_dropout(rate = 0.25) %>%
+#           layer_flatten() %>% 
+#           layer_dense(128, activation = "relu") %>%
+#           layer_dropout(rate = 0.5) %>% 
+#           layer_dense(num_classes, activation = "sigmoid")
 
 summary(model)
 
-model %>% compile(optimizer = optimizer_adam(lr=0.0001, 
-                                             beta_1=0.9, 
-                                             beta_2=0.999, 
-                                             epsilon=1e-08, decay=0.0),
+model %>% compile(optimizer = optimizer_adam(lr = 0.00001),
                   loss = "binary_crossentropy",
                   metrics= "accuracy")
+
 
 
 # Data augmentation
@@ -193,8 +221,9 @@ datagen <- image_data_generator(featurewise_center = TRUE,
                                 vertical_flip = TRUE)
 
 
+
 early_stopping_monitor <- callback_early_stopping(monitor = "val_loss",
-                                                  patience = 3,
+                                                  patience = 6,
                                                   mode = "min")
 
 best_model_path <- file.path(here(), subdir, "best_model.h5")
@@ -205,32 +234,53 @@ model_checkpoint <- callback_model_checkpoint(best_model_path,
                                               save_best_only = TRUE)
 
 
+learning_rate_reduction = callback_reduce_lr_on_plateau(monitor='val_acc', 
+                                                        patience=3, 
+                                                        verbose=1, 
+                                                        factor=0.5, 
+                                                        min_lr=0.00001)
+
+
+test_df <- sample_n(test_df, nrow(test_df))
+train_df <- sample_n(train_df, nrow(train_df))
 
 X_test_reshape  <- array_reshape(matrix(test_df[, -1]),
                                  dim = c(nrow(test_df), 50, 50, 3))
 X_train_reshape <- array_reshape(matrix(train_df[, -1]),
                                  dim = c(nrow(train_df), 50, 50, 3))
 
-test_generator <- flow_images_from_data(x = X_test_reshape, 
-                                        y = c(test_df[,1]),
+#tune = 300
+#test_tune = tune *.2
+#test_generator <- flow_images_from_data(x = X_test_reshape[1:test_tune,,,], 
+#                                        y = to_categorical(test_df[,1], num_classes)[1:test_tune,],
+#                                         batch_size = batch_size,
+#                                        generator = datagen,
+#                                        seed = 2)
+
+train_generator <- flow_images_from_data(x = X_train_reshape,#[1:tune,,,], 
+                                         y = to_categorical(train_df[,1], num_classes),#[1:tune,],
                                          batch_size = batch_size,
-                                         generator = datagen)
-
-train_generator <- flow_images_from_data(x = X_train_reshape, 
-                                        y = c(train_df[,1]),
-                                         batch_size = batch_size,
-                                         generator = datagen)
+                                         generator = datagen,
+                                         seed = 2)
 
 
 
-hist <- model %>% 
+#hist <- model %>% 
+#  fit_generator(train_generator,
+#                steps_per_epoch = as.integer(nrow(train_df)/batch_size), 
+#                epochs = epochs, 
+#                validation_data = test_generator,
+#                verbose = 1, # verbose = 2, one line per epoch
+#                callbacks = list( model_checkpoint, learning_rate_reduction)
+#                )
+
+
+hist <- model %>%
   fit_generator(train_generator,
-                steps_per_epoch = as.integer(nrow(train_df)/batch_size), 
-                epochs = epochs, 
-                validation_data = test_generator,
-                validation_steps = as.integer(nrow(test_df)/batch_size),
-                verbose = 1, # verbose = 2, one line per epoch
-                callbacks = list(early_stopping_monitor, model_checkpoint)
-                )
-
+                epochs = epochs,
+                steps_per_epoch = as.integer(nrow(train_df)/batch_size),
+                validation_data = list(X_test_reshape,#[1:test_tune,,,],
+                                       to_categorical(test_df[,1], num_classes)),#[1:test_tune,]),
+                verbose = 1,
+                callbacks = list( model_checkpoint))
 ```
