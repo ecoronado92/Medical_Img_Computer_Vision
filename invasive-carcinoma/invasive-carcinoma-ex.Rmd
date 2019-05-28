@@ -8,10 +8,12 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 suppressMessages(library(tidyverse))
+library(tensorflow)
 library(keras)
 library(here)
 library(curl)
 library(knitr)
+library(png)
 suppressMessages(library(ROSE))
 suppressMessages(library(imager))
 suppressMessages(library(filesstrings))
@@ -40,23 +42,24 @@ if (!file.exists(data_dir)){
   
   #tmp_patches <- tmp_patches[r_idxes]
   tmp_patches <- tmp_patches[1:files_to_keep] 
-  tmp_zero <- str_subset(tmp_patches, ".*class0.png")
-  tmp_one <- str_subset(tmp_patches, ".*class1.png")
+  #tmp_zero <- str_subset(tmp_patches, ".*class0.png")
+  #tmp_one <- str_subset(tmp_patches, ".*class1.png")
   
   # Create data directory for 60k patches
   dir.create(data_dir)
-  dir.create(file.path(data_dir, "0"))
-  dir.create(file.path(data_dir, "1"))
+  #dir.create(file.path(data_dir, "0"))
+  #dir.create(file.path(data_dir, "1"))
   
   # Moves 60k patches to new dirs
-  file.move(tmp_zero, destinations =file.path(data_dir, "0"))
-  file.move(tmp_one, destinations =file.path(data_dir, "1") )
+  file.move(tmp_patches, destinations = data_dir)
+  #file.move(tmp_zero, destinations =file.path(data_dir, "0"))
+  #file.move(tmp_one, destinations =file.path(data_dir, "1") )
   
   # Clean up
   dir.remove(tmp_dir)
   #file.remove(file.path(here(), subdir, "tmp.zip"))
-  rm(tmp_zero)
-  rm(tmp_one)
+  #rm(tmp_zero)
+  #rm(tmp_one)
   rm(tmp_patches)
 }
 
@@ -112,7 +115,7 @@ Y <- x_y[[2]]
 kable(table(Y) %>% t()) # Imbalance
 
 # Train / Test split
-samp_size <- dim(X)[1] # 60,000
+samp_size <- dim(X)[1] # 100,000
 set.seed(2)
 train <- sample(seq_len(samp_size), size = 0.85 * samp_size) # 15-85 test/train split
 
@@ -122,8 +125,8 @@ y_train <- Y[train]
 y_test  <- Y[-train]
 
 # Clean-up
-rm(X, Y, x_y, image_patches,
-   class_one, class_zero)
+rm(X, Y, x_y, class_one,
+   class_zero)
 
 # One hot encode
 nobs_train <- dim(X_train)[1]
@@ -138,19 +141,22 @@ X_test  <- array_reshape(X_test,
                          dim = c(nobs_test, X_test_shape)) %>%  as_tibble()
 
 # Imbalance pre-processing
-test_df <- bind_cols(y = y_test, X_test)
+idxs <- seq(1, files_to_keep)
+test_df <- bind_cols(idx = idxs[!(idxs %in% train)],
+                     y = y_test, X_test)
 samp_df <- test_df %>% 
   group_by(y) %>% 
   summarize(test_original = n())
 
-test_df <- ovun.sample(y ~., data = test_df, method = "under", seed = 1)$data
+test_df <- ovun.sample(y ~ ., data = test_df, method = "under", seed = 1)$data
 samp_df <- bind_cols(samp_df, over_und_test = as.integer(table(test_df$y)))
 rm(X_test)
 
-train_df <- bind_cols(y = factor(y_train), X_train)
+train_df <- bind_cols(idx = idxs[idxs %in% train],
+                      y = factor(y_train), X_train)
 samp_df  <- bind_cols(samp_df, train_original = as.integer(table(train_df$y)))
 
-train_df <- ovun.sample(y ~., data = train_df, method = "under", seed = 1)$data
+train_df <- ovun.sample(y ~ ., data = train_df, method = "under", seed = 1)$data
 samp_df <- bind_cols(samp_df, over_und_train = as.integer(table(train_df$y)))
 rm(X_train)
 
@@ -240,14 +246,46 @@ learning_rate_reduction = callback_reduce_lr_on_plateau(monitor='val_acc',
                                                         factor=0.5, 
                                                         min_lr=0.00001)
 
+train_idxs <- train_df[,1]
+#test_df <- sample_n(test_df, nrow(test_df))
+#train_df <- sample_n(train_df, nrow(train_df))
 
-test_df <- sample_n(test_df, nrow(test_df))
-train_df <- sample_n(train_df, nrow(train_df))
-
-X_test_reshape  <- array_reshape(matrix(test_df[, -1]),
+X_test_reshape  <- array_reshape(matrix(test_df[, -(1:2)]),
                                  dim = c(nrow(test_df), 50, 50, 3))
-X_train_reshape <- array_reshape(matrix(train_df[, -1]),
+X_train_reshape <- array_reshape(matrix(train_df[, -(1:2)]),
                                  dim = c(nrow(train_df), 50, 50, 3))
+
+
+save_train_images <- function(img_array, image_patches, patch_idxs ){
+  
+  train_path <- file.path(here(), subdir, "TRAIN")
+  dir.create(train_path)
+  dir.create(file.path(train_path, "0"))
+  dir.create(file.path(train_path, "1"))
+  
+  p <- progress_estimated(length(patch_idxs))
+  
+  for(i in 1:length(patch_idxs)){
+    
+    tmp_path <- image_patches[patch_idxs[i]]
+    tmp_name <- basename(tmp_path)
+    
+    if (str_detect(tmp_path, ".*class0.png")){
+      
+      writePNG(img_array[i,,,], target = file.path(train_path, "0", tmp_name))
+      
+    } else {
+      
+      writePNG(img_array[i,,,], target = file.path(train_path, "1", tmp_name))
+      
+    }
+    
+    p$tick()$print()
+  }
+  
+}
+
+save_train_images(X_train_reshape, image_patches, train_idxs)
 
 #tune = 300
 #test_tune = tune *.2
@@ -257,14 +295,21 @@ X_train_reshape <- array_reshape(matrix(train_df[, -1]),
 #                                        generator = datagen,
 #                                        seed = 2)
 
-train_generator <- flow_images_from_data(x = X_train_reshape,#[1:tune,,,], 
-                                         y = to_categorical(train_df[,1], num_classes),#[1:tune,],
-                                         batch_size = batch_size,
-                                         generator = datagen,
-                                         seed = 2)
+#train_generator <- flow_images_from_data(x = X_train_reshape,#[1:tune,,,], 
+#                                         y = to_categorical(train_df[,], num_classes),#[1:tune,],
+#                                         batch_size = batch_size,
+#                                         generator = datagen,
+#                                         seed = 2)
 
 
+train_generator <- flow_images_from_directory(directory = file.path(here(), subdir, "TRAIN"), 
+                                              generator = datagen,
+                                              target_size = c(50, 50),
+                                              batch_size = batch_size,
+                                              class_mode = "binary", seed = 1, 
+                                              subset = "training" ) # use training subset
 
+rm(X_train_reshape)
 #hist <- model %>% 
 #  fit_generator(train_generator,
 #                steps_per_epoch = as.integer(nrow(train_df)/batch_size), 
@@ -280,7 +325,7 @@ hist <- model %>%
                 epochs = epochs,
                 steps_per_epoch = as.integer(nrow(train_df)/batch_size),
                 validation_data = list(X_test_reshape,#[1:test_tune,,,],
-                                       to_categorical(test_df[,1], num_classes)),#[1:test_tune,]),
+                                       to_categorical(test_df[,2], num_classes)),#[1:test_tune,]),
                 verbose = 1,
                 callbacks = list( model_checkpoint))
 ```
