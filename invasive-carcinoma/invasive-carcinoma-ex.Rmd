@@ -14,52 +14,45 @@ library(here)
 library(curl)
 library(knitr)
 library(png)
-suppressMessages(library(ROSE))
-suppressMessages(library(imager))
+library(caret)
 suppressMessages(library(filesstrings))
 set.seed(1)
 
-# Check if data directory exists in current repo, direct user to
-# troubleshoot page in case they need to download the data
+# Check if data directories exists in current repo, if not
+# download for original data file and pre process images
+# for TRAIN and TEST folders
 subdir <- "invasive-carcinoma"
 data_dir <- file.path(here(), subdir, "data_idc")
+train_dir <- file.path(here(), subdir, "TRAIN")
+test_dir <- file.path(here(), subdir, "TEST")
 tmp_dir <- file.path(here(), subdir, "tmp")
 files_to_keep <- 100000
 
-if (!file.exists(data_dir)){
+if (!dir.exists(train_dir) || !dir.exists(test_dir)){
   # Download original data zip file - size 1.6 Gb
- # download.file("http://andrewjanowczyk.com/wp-static/IDC_regular_ps50_idx5.zip",
-                #destfile = file.path(here(), subdir, "tmp.zip"))
+   download.file("http://andrewjanowczyk.com/wp-static/IDC_regular_ps50_idx5.zip",
+                destfile = file.path(here(), subdir, "tmp.zip"))
   
   # Unzip file
   unzip(file.path(here(), subdir, "tmp.zip"), exdir = tmp_dir)
   
-  # Take first n 50x50 image patches
+  # Take first "n" randomly selected 50x50 image patches
   tmp_patches <- list.files(tmp_dir, pattern = "*.png", recursive = TRUE,
                             full.names = TRUE)
   
-  #r_idxes <- sample(1:length(tmp_patches), files_to_keep)
+  # random selection
+  r_idxes <- sample(1:length(tmp_patches), files_to_keep)
+  tmp_patches <- tmp_patches[r_idxes]
   
-  #tmp_patches <- tmp_patches[r_idxes]
-  tmp_patches <- tmp_patches[1:files_to_keep] 
-  #tmp_zero <- str_subset(tmp_patches, ".*class0.png")
-  #tmp_one <- str_subset(tmp_patches, ".*class1.png")
-  
-  # Create data directory for 60k patches
+  # Create data directory for files_to_keep patches
   dir.create(data_dir)
-  #dir.create(file.path(data_dir, "0"))
-  #dir.create(file.path(data_dir, "1"))
   
-  # Moves 60k patches to new dirs
+  # Moves "n" patches to new dir
   file.move(tmp_patches, destinations = data_dir)
-  #file.move(tmp_zero, destinations =file.path(data_dir, "0"))
-  #file.move(tmp_one, destinations =file.path(data_dir, "1") )
   
-  # Clean up
+  # Clean up and remove original zip file to save space
   dir.remove(tmp_dir)
-  #file.remove(file.path(here(), subdir, "tmp.zip"))
-  #rm(tmp_zero)
-  #rm(tmp_one)
+  file.remove(file.path(here(), subdir, "tmp.zip"))
   rm(tmp_patches)
 }
 
@@ -72,27 +65,37 @@ if (!file.exists(data_dir)){
 * Choosehappy. “Use Case 6: Invasive Ductal Carcinoma (IDC) Segmentation.” Andrew Janowczyk, 5 Jan. 2018, www.andrewjanowczyk.com/use-case-6-invasive-ductal-carcinoma-idc-segmentation/.
 
 ```{r}
+# Get file paths of all image patches saves as PNGs in data directory
 image_patches <- list.files(data_dir, pattern = "*.png", recursive = TRUE,
                              full.names = TRUE)
 
+#From all files, create subsets of those that are classified as malignant(1),
+# or benign(0)
 class_zero <- list.files(data_dir, pattern = "*class0.png", recursive = TRUE, 
                          full.names = TRUE)
 class_one  <-  list.files(data_dir, pattern = "*class1.png", recursive = TRUE, 
                          full.names = TRUE)
 
+# Helper function to preprocess images, not all in original zip 
+# are 50x50 color images (50,50,3)
 process_images <-  function(lower_idx, upper_idx){
-  img_width = img_height <- 50
-  channels <- 3
-  p <- progress_estimated(upper_idx)
   
+  img_width = img_height <- 50 # image width and height
+  channels <- 3 # 3 channels = color, 1 channel = BW
+  p <- progress_estimated(upper_idx) # set progress bar
+  
+  # Pre-allocate space for efficiency
   X <- array(NA, dim= c(upper_idx, img_width, img_height, channels))
   y <- rep(NA, upper_idx)
   
+  # Loop over all PNG files and load them as normalized (50, 50, 3) matrices
   for (i in lower_idx:upper_idx){
+    # Store images as matrices and normalize to get values between 0-1
     X[i,,,] <- image_load(image_patches[i], target_size = c(img_width, img_height), 
                      interpolation = "bicubic") %>% 
     image_to_array(.) * (1/255)
-  
+    
+    # Now, if image is malignant or benign store its classification accordintly
     if(image_patches[i] %in% class_zero){
       y[i] <- "0"
     } else {
@@ -102,73 +105,127 @@ process_images <-  function(lower_idx, upper_idx){
     p$tick()$print()
   }
   
-  return(list(X,y))
+  return(list(X,y)) # return X,y objects
   
 }
+```
 
 
+```{r img_preproc, cache=TRUE}
+# Run helper function for all images data directory,
+# however inputs allow to pre-process subsets via a
+# lower and upper index bounds
 x_y <- process_images(1,length(image_patches))
 
+```
+
+```{r output_preproc}
+# Extract preprocessing output
 X <- x_y[[1]]
 Y <- x_y[[2]]
 
-kable(table(Y) %>% t()) # Imbalance
+# Create table to show num of classes stored and 
+# preprocessed - NOTE: this shows class imbalance
+kable(table(Y) %>% t()) 
+```
 
+```{r train_test_split}
 # Train / Test split
-samp_size <- dim(X)[1] # 100,000
-set.seed(2)
-train <- sample(seq_len(samp_size), size = 0.85 * samp_size) # 15-85 test/train split
+samp_size <- dim(X)[1] # number of files preprocesses (e.g. 100,000)
 
+# 15-85 test/train split indexes
+train <- sample(seq_len(samp_size), size = 0.85 * samp_size) 
+
+# Store train and test splits for both class and features
 X_train <- X[train,,,]
 X_test  <- X[-train,,,]
 y_train <- Y[train]
 y_test  <- Y[-train]
 
-# Clean-up
+# Clean-up and save space
 rm(X, Y, x_y, class_one,
    class_zero)
 
-# One hot encode
+```
+
+
+```{r}
+# First reshape matrices to feed into function to
+# tackle imbalance
 nobs_train <- dim(X_train)[1]
 nobs_test  <- dim(X_test)[1]
 
+# Shape of new rows will be (1, 50*50*3) = (1, 7500)
 X_train_shape <- (dim(X_train)[2]^2) * dim(X_train)[4]
 X_test_shape  <- (dim(X_test)[2]^2) * dim(X_test)[4]
 
+# For each array, reshape it as (1, 7500) and stack into dataframe
 X_train <- array_reshape(X_train, 
                          dim = c(nobs_train, X_train_shape)) %>% as_tibble()
 X_test  <- array_reshape(X_test, 
                          dim = c(nobs_test, X_test_shape)) %>%  as_tibble()
 
-# Imbalance pre-processing
-idxs <- seq(1, files_to_keep)
+```
+
+
+```{r imbalance}
+# Tackle imbalance but store pre- and post downsampling to
+# show effects of balancing classes
+
+idxs <- seq(1, files_to_keep) # Create vector with 1-100,000
+
+# Create a test dataframe with the patch index (to be used later),
+# the class (y), and features
 test_df <- bind_cols(idx = idxs[!(idxs %in% train)],
                      y = y_test, X_test)
+
+# Store current class imbalance for test dataset
 samp_df <- test_df %>% 
   group_by(y) %>% 
   summarize(test_original = n())
 
-test_df <- ovun.sample(y ~ ., data = test_df, method = "under", seed = 1)$data
-samp_df <- bind_cols(samp_df, over_und_test = as.integer(table(test_df$y)))
-rm(X_test)
+# Use `caret` function to downsample rows such that classes are balanced
+# based on the class with less counts
+test_df <- downSample(x = test_df[,-2], y = factor(test_df$y)) %>% 
+  mutate(y = as.numeric(Class) - 1) %>% 
+  select(y, everything(), -Class)
 
+# Append new class balance for test data
+samp_df <- bind_cols(samp_df, over_und_test = as.integer(table(test_df$y)))
+rm(X_test) # clean-up space
+
+
+# Do same procedure as above for train data
 train_df <- bind_cols(idx = idxs[idxs %in% train],
                       y = factor(y_train), X_train)
 samp_df  <- bind_cols(samp_df, train_original = as.integer(table(train_df$y)))
 
-train_df <- ovun.sample(y ~ ., data = train_df, method = "under", seed = 1)$data
+train_df <- downSample(x = train_df[,-2], y = factor(train_df$y)) %>% 
+  mutate(y = as.numeric(Class) -1) %>% 
+  select(y, everything(), -Class)
+
 samp_df <- bind_cols(samp_df, over_und_train = as.integer(table(train_df$y)))
 rm(X_train)
 
+# Show table with pre/post class balancing techniques
 kable(samp_df)
 
+```
 
-## Model
-batch_size <- 256
-epochs <- 80
-num_classes <- 2
+```{r model}
+# Create model
+batch_size <- 256 # Large batch size due to big # of images
+epochs <- 40 
+num_classes <- 1 # No one-hot encoding, for OHE num_class = 2 (binary)
 
+# Set up sequential model
 model <- keras_model_sequential()
+
+# Set convolutional layers with kernel_size of a 3x3 grid, 
+# max po0ling of 2x2 and relu activation. Two fully connected layers
+# are included with a subsequent dropout rate of 50%
+# Output layer has sigmoid activation for binary
+# Input shape is (50,50,3) arrays
 model %>% layer_conv_2d(filters = 32, kernel_size = c(3,3), 
                         activation = "relu", input_shape = c(50, 50, 3)) %>% 
           layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
@@ -176,7 +233,6 @@ model %>% layer_conv_2d(filters = 32, kernel_size = c(3,3),
           layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
           layer_conv_2d(128, kernel_size = c(3, 3), activation = "relu") %>%
           layer_conv_2d(256, kernel_size = c(3, 3), activation = "relu") %>%
-          #layer_dropout(rate = 0.5) %>% 
           layer_flatten() %>% 
           layer_dropout(rate = 0.5) %>% 
           layer_dense(128, activation = "relu") %>% 
@@ -184,54 +240,44 @@ model %>% layer_conv_2d(filters = 32, kernel_size = c(3,3),
           layer_dense(128, activation = "relu") %>%
           layer_dense(num_classes, activation = "sigmoid")
 
-# model %>% layer_conv_2d(filters = 32, kernel_size = c(3,3), 
-#                         activation = "relu", input_shape = c(50, 50, 3), padding = "same", 
-#                         kernel_initializer = "he_normal") %>%
-#           layer_conv_2d(32, kernel_size = c(3,3), activation = "relu") %>% 
-#           layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
-#           layer_dropout(rate = 0.5) %>% 
-#           layer_conv_2d(64, kernel_size = c(3, 3), activation = "relu", padding = "same") %>%
-#           layer_conv_2d(64, kernel_size = c(3, 3), activation = "relu") %>%
-#           layer_max_pooling_2d(pool_size = c(2, 2)) %>%
-#           layer_dropout(rate = 0.5) %>%
-#           layer_flatten() %>% 
-#           layer_dense(512, activation = "relu") %>%
-#         layer_batch_normalization() %>% 
-#           layer_dropout(rate = 0.5) %>% 
-#           layer_dense(num_classes, activation = "sigmoid")
-
-
-#model %>% layer_conv_2d(filters = 32, kernel_size = c(3,3), 
-#                        activation = "relu", input_shape = c(50, 50, 3)) %>%
-#          layer_conv_2d(64, kernel_size = c(3, 3), activation = "relu") %>%
-#          layer_max_pooling_2d(pool_size = c(2, 2)) %>%
-#          layer_dropout(rate = 0.25) %>%
-#           layer_flatten() %>% 
-#           layer_dense(128, activation = "relu") %>%
-#           layer_dropout(rate = 0.5) %>% 
-#           layer_dense(num_classes, activation = "sigmoid")
-
+# Output model summary
 summary(model)
+```
 
+```{r compile}
+# Compile model with Adama SGD optimizer with a small learning rate
+# binarry cross entropy loss and saving accuracy
 model %>% compile(optimizer = optimizer_adam(lr = 0.00001),
                   loss = "binary_crossentropy",
                   metrics= "accuracy")
 
 
+```
 
-# Data augmentation
+```{r data augmentation}
+# Data augmentation that includes vertical/horizontal flips
+# as well as rotations, and some feature specific normalizations
 datagen <- image_data_generator(featurewise_center = TRUE,
                                 featurewise_std_normalization = TRUE,
                                 rotation_range = 180,
                                 horizontal_flip = TRUE,
-                                vertical_flip = TRUE)
+                                vertical_flip = TRUE
+                                )
 
 
+```
 
+```{r callback-fcns}
+# Set callbacks functions that are helpful to monitor CNN fit
+
+# Early stop monitoring of validation loss values, if val
+# loss doesn't decrease after 3 epochs stop CNN fit
 early_stopping_monitor <- callback_early_stopping(monitor = "val_loss",
-                                                  patience = 6,
+                                                  patience = 3,
                                                   mode = "min")
 
+# Best model check, if val loss decreases save model as 
+# best_model.h5 file in current directory
 best_model_path <- file.path(here(), subdir, "best_model.h5")
 model_checkpoint <- callback_model_checkpoint(best_model_path,
                                               monitor = "val_loss",
@@ -239,45 +285,49 @@ model_checkpoint <- callback_model_checkpoint(best_model_path,
                                               verbose = 1,
                                               save_best_only = TRUE)
 
+```
 
-learning_rate_reduction = callback_reduce_lr_on_plateau(monitor='val_acc', 
-                                                        patience=3, 
-                                                        verbose=1, 
-                                                        factor=0.5, 
-                                                        min_lr=0.00001)
+```{r save_imgs_2_dir}
 
-train_idxs <- train_df[,1]
-#test_df <- sample_n(test_df, nrow(test_df))
-#train_df <- sample_n(train_df, nrow(train_df))
+# Reshape (n,7500) train/test data frames into NN compatible input shape
+# (50, 50, 3)
+X_test_reshape <- array_reshape(as.matrix(test_df[,-c(1,2)]),
+                                dim = c(nrow(test_df), 50, 50, 3))
 
-X_test_reshape  <- array_reshape(matrix(test_df[, -(1:2)]),
-                                 dim = c(nrow(test_df), 50, 50, 3))
-X_train_reshape <- array_reshape(matrix(train_df[, -(1:2)]),
+X_train_reshape <- array_reshape(as.matrix(train_df[, -(1:2)]),
                                  dim = c(nrow(train_df), 50, 50, 3))
 
 
-save_train_images <- function(img_array, image_patches, patch_idxs ){
+
+# Helper function to save images to local folders and avoid keeping large
+# amounts of data stored in memory and feeding them to CNN
+# Inputs: (n, 50,50,3) array, file paths from data directory (image_patches),
+# train or test data split indexes saved in df previously (patch_idxs),
+# name of directory to create (dir_to_create)
+save_images <- function(img_array, image_patches, patch_idxs, dir_to_create){
   
-  train_path <- file.path(here(), subdir, "TRAIN")
-  dir.create(train_path)
-  dir.create(file.path(train_path, "0"))
-  dir.create(file.path(train_path, "1"))
+  # Create directory and subdirectories 0 and 1
+  img_save_path <- file.path(here(), subdir, dir_to_create)
+  dir.create(img_save_path)
+  dir.create(file.path(img_save_path, "0"))
+  dir.create(file.path(img_save_path, "1"))
   
-  p <- progress_estimated(length(patch_idxs))
+  p <- progress_estimated(length(patch_idxs)) # Set progress bar
   
+  # For each train/test index
   for(i in 1:length(patch_idxs)){
     
+    # Get original file path in data directory
     tmp_path <- image_patches[patch_idxs[i]]
-    tmp_name <- basename(tmp_path)
+    tmp_name <- basename(tmp_path) # Extract filename
     
+    # If original file path has 0, store it in 0 subdirectory with original
+    # filename extracted (e.g. 10253_idx5_x501_y351_class1.png), else
+    # store it in the 1 subdirectory
     if (str_detect(tmp_path, ".*class0.png")){
-      
-      writePNG(img_array[i,,,], target = file.path(train_path, "0", tmp_name))
-      
+      writePNG(img_array[i,,,], target = file.path(img_save_path, "0", tmp_name))
     } else {
-      
-      writePNG(img_array[i,,,], target = file.path(train_path, "1", tmp_name))
-      
+      writePNG(img_array[i,,,], target = file.path(img_save_path, "1", tmp_name))
     }
     
     p$tick()$print()
@@ -285,47 +335,62 @@ save_train_images <- function(img_array, image_patches, patch_idxs ){
   
 }
 
-save_train_images(X_train_reshape, image_patches, train_idxs)
+# If TRAIN dir doesn't exist run helper function
+if (!dir.exists(file.path(here(), subdir, "TRAIN"))){
+  train_idxs <- train_df[,2] # Grab indexes to pass to help fcn
+  save_images(X_train_reshape, image_patches, train_idxs, "TRAIN")
+}
 
-#tune = 300
-#test_tune = tune *.2
-#test_generator <- flow_images_from_data(x = X_test_reshape[1:test_tune,,,], 
-#                                        y = to_categorical(test_df[,1], num_classes)[1:test_tune,],
-#                                         batch_size = batch_size,
-#                                        generator = datagen,
-#                                        seed = 2)
-
-#train_generator <- flow_images_from_data(x = X_train_reshape,#[1:tune,,,], 
-#                                         y = to_categorical(train_df[,], num_classes),#[1:tune,],
-#                                         batch_size = batch_size,
-#                                         generator = datagen,
-#                                         seed = 2)
+# If TEST dir doesn't exist run helper function
+if (!dir.exists(file.path(here(), subdir, "TEST"))){
+  test_idxs <- test_df[,2]  
+  save_images(X_test_reshape, image_patches, test_idxs, "TEST")
+}
 
 
+```
+
+```{r datage_test_train}
+# Set up train/test data generator object via datagen
+# specified above
+# Now files are feed from a directory and not a dataframe/array
+# which takes too much memory and can cause computer to slow down
+# significantly
 train_generator <- flow_images_from_directory(directory = file.path(here(), subdir, "TRAIN"), 
                                               generator = datagen,
                                               target_size = c(50, 50),
                                               batch_size = batch_size,
-                                              class_mode = "binary", seed = 1, 
-                                              subset = "training" ) # use training subset
+                                              class_mode = "binary", seed = 2)
 
+test_generator <- flow_images_from_directory(directory = file.path(here(), subdir, "TEST"), 
+                                              generator = datagen,
+                                              target_size = c(50, 50),
+                                              batch_size = batch_size,
+                                              class_mode = "binary", seed = 2)
+
+# Clean-up space in memory
 rm(X_train_reshape)
-#hist <- model %>% 
-#  fit_generator(train_generator,
-#                steps_per_epoch = as.integer(nrow(train_df)/batch_size), 
-#                epochs = epochs, 
-#                validation_data = test_generator,
-#                verbose = 1, # verbose = 2, one line per epoch
-#                callbacks = list( model_checkpoint, learning_rate_reduction)
-#                )
+rm(X_test_reshape)
+```
 
-
+```{r model_fit}
+# Fit CNN
 hist <- model %>%
   fit_generator(train_generator,
                 epochs = epochs,
                 steps_per_epoch = as.integer(nrow(train_df)/batch_size),
-                validation_data = list(X_test_reshape,#[1:test_tune,,,],
-                                       to_categorical(test_df[,2], num_classes)),#[1:test_tune,]),
+                validation_data = test_generator,
                 verbose = 1,
-                callbacks = list( model_checkpoint))
+                callbacks = list(model_checkpoint))
+
+```
+
+```{r plot_metrics}
+#Save accuracy/loss metrics as dataframe
+hist_df <- hist$metrics %>% as_data_frame()
+
+# Use generic plot function to plot accuracy/loss metrics in ggplot
+plot(hist)
+
+
 ```
