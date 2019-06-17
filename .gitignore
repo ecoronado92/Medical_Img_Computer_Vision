@@ -5,4 +5,7 @@
 chest-abdomen-xrays/data/*
 invasive-carcinoma/data_idc/*
 invasive-carcinoma/.DS_Store
+invasive-carcinoma/*.zip
+invasive-carcinoma/T*
+invasive-carcinoma/inv*cache
 

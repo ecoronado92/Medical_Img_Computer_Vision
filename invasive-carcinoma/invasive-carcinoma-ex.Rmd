@@ -16,8 +16,29 @@ library(knitr)
 library(png)
 library(caret)
 suppressMessages(library(filesstrings))
+suppressMessages(source("./extract_carcinoma_data.R"))
 set.seed(1)
+```
 
+**_Example and code based on:_**
+ 
+* Baruah, Bikram, and Bikram Baruah. “Predicting Invasive Ductal Carcinoma Using Convolutional Neural Network (CNN) in Keras.” Towards Data Science, Towards Data Science, 3 Jan. 2019, towardsdatascience.com/predicting-invasive-ductal-carcinoma-using-convolutional-neural-network-cnn-in-keras-debb429de9a6. 
+
+* Choosehappy. “Use Case 6: Invasive Ductal Carcinoma (IDC) Segmentation.” Andrew Janowczyk, 5 Jan. 2018, www.andrewjanowczyk.com/use-case-6-invasive-ductal-carcinoma-idc-segmentation/. 
+  
+#### **Before starting the exercise**  
+If you'd like to quickly knit an example using pre-computed data please download and unzip the files found in [**this link**](https://duke.box.com/s/4ouru5cu3b9sg7bn375st7m2nhfrkdyt).  
+  
+Otherwise, uncomment the line with the `extract_carcinoma_data` helper function.  
+This will take a couple of hour to run but will generate both the data and cache files for easy tuning of the model if needed.  
+  
+### 1. Dataset  
+The original data set consists of 162 whole mount slide images from breast cancer samples that were scanned at 40x. However, since this whole mounts cannot be easily processed or analyzed without some pre-processing they were segmented into 50px x 50px patches to generate almost 300,000 image files (1.6 Gb) - 60\% classified as benign and 40\% as malignant.  
+
+Given image files are large and require memory storage, we will focus on exploring a subset. This was done using a custom function `extract_carcinoma_data` which downloads the 1.6 Gb patches file, randomly selects `n` images and stores these in a temporary directory `data_idc`. The number of files to select can be specified using the `files_to_keep` variable, **but it is not recommended you select more than 100,000** as this will require to load around 2 Gb of data onto your RAM memory. Additionally, the helper function conducts some environment cleaning routines to remove unnecessary variables.
+
+
+```{r}
 # Check if data directories exists in current repo, if not
 # download for original data file and pre process images
 # for TRAIN and TEST folders
@@ -25,44 +46,19 @@ subdir <- "invasive-carcinoma"
 data_dir <- file.path(here(), subdir, "data_idc")
 train_dir <- file.path(here(), subdir, "TRAIN")
 test_dir <- file.path(here(), subdir, "TEST")
-tmp_dir <- file.path(here(), subdir, "tmp")
-files_to_keep <- 100000
+files_to_keep <- 35000
 
-if (!dir.exists(train_dir) || !dir.exists(test_dir)){
-  # Download original data zip file - size 1.6 Gb
-   download.file("http://andrewjanowczyk.com/wp-static/IDC_regular_ps50_idx5.zip",
-                destfile = file.path(here(), subdir, "tmp.zip"))
-  
-  # Unzip file
-  unzip(file.path(here(), subdir, "tmp.zip"), exdir = tmp_dir)
-  
-  # Take first "n" randomly selected 50x50 image patches
-  tmp_patches <- list.files(tmp_dir, pattern = "*.png", recursive = TRUE,
-                            full.names = TRUE)
-  
-  # random selection
-  r_idxes <- sample(1:length(tmp_patches), files_to_keep)
-  tmp_patches <- tmp_patches[r_idxes]
-  
-  # Create data directory for files_to_keep patches
-  dir.create(data_dir)
-  
-  # Moves "n" patches to new dir
-  file.move(tmp_patches, destinations = data_dir)
-  
-  # Clean up and remove original zip file to save space
-  dir.remove(tmp_dir)
-  file.remove(file.path(here(), subdir, "tmp.zip"))
-  rm(tmp_patches)
-}
+# Helper function that downloads original data,
+# extracts necessary data and stores it in respective folder
+
+# extract_carcinoma_data(subdir, train_dir, test_dir, files_to_keep )
 
 ```
 
- **_Example and code based on:_**
- 
-* Baruah, Bikram, and Bikram Baruah. “Predicting Invasive Ductal Carcinoma Using Convolutional Neural Network (CNN) in Keras.” Towards Data Science, Towards Data Science, 3 Jan. 2019, towardsdatascience.com/predicting-invasive-ductal-carcinoma-using-convolutional-neural-network-cnn-in-keras-debb429de9a6. 
+After the files to analyze are selected some further processing must happen given some patches are not the correct dimensions needed for analysis - 50x50x3 - where 50x50 is the pixel dimensions and 3 refers to a RGB color spectrum (e.g. for black and white you'd see a 50x50x1).  
 
-* Choosehappy. “Use Case 6: Invasive Ductal Carcinoma (IDC) Segmentation.” Andrew Janowczyk, 5 Jan. 2018, www.andrewjanowczyk.com/use-case-6-invasive-ductal-carcinoma-idc-segmentation/.
+This task is done via the `process_images` custom function. It first lists the files in `data_idc`, splits them into malignant vs benign based on the filename terminations (i.e. "...class0"" for benign or "...class1" for malignant). Then the images are read one at a time, reshaped into 50x50x3 arrays with normalized pixel values between 0 and 1. Afterward it stores the image classification as `0` or `1` depending on the whether the processed image was benign or malignant, respectively.
+
 
 ```{r}
 # Get file paths of all image patches saves as PNGs in data directory
@@ -119,6 +115,10 @@ x_y <- process_images(1,length(image_patches))
 
 ```
 
+Now that we have all the data we must check for class imbalance (i.e. if the number of 0s and 1s are the same or not). This is important to reduce model bias since data imbalance can cause the model to incorrectly classify the minority class and the majority class (i.e. classify malignant as benign).  
+  
+From the table below we can observe there are more benign cases in our subset. We will address this later using an R package.
+
 ```{r output_preproc}
 # Extract preprocessing output
 X <- x_y[[1]]
@@ -128,6 +128,8 @@ Y <- x_y[[2]]
 # preprocessed - NOTE: this shows class imbalance
 kable(table(Y) %>% t()) 
 ```
+
+First, we split our subset into training and test data (85\% and 15\% respectively).  
 
 ```{r train_test_split}
 # Train / Test split
@@ -148,6 +150,7 @@ rm(X, Y, x_y, class_one,
 
 ```
 
+Now to tackle the class imbalance we will use the `caret` R-package. However, the function we will use doesn't take in an multidimensional array (e.g. 50x50x3) and instead takes an `n`x`m` table/matrix. Therefore, we must flatten the arrays into 1 x `m` rows and stack them together.  
 
 ```{r}
 # First reshape matrices to feed into function to
@@ -167,6 +170,9 @@ X_test  <- array_reshape(X_test,
 
 ```
 
+This process is done for both the train (`train_df`) and test data (`test_df`). In our case we will want to undersample the majority class (i.e. benign). Using the `downSample` function from the `caret` package we're able to tackle the class imbalance issues.   
+  
+The table below demonstrates the differences between pre- and post- class balancing using the `downSample` function. As one can observe the function under samples the majority class and makes the classes balanced (ie. same number of 0s and 1s).
 
 ```{r imbalance}
 # Tackle imbalance but store pre- and post downsampling to
@@ -191,7 +197,7 @@ test_df <- downSample(x = test_df[,-2], y = factor(test_df$y)) %>%
   select(y, everything(), -Class)
 
 # Append new class balance for test data
-samp_df <- bind_cols(samp_df, over_und_test = as.integer(table(test_df$y)))
+samp_df <- bind_cols(samp_df, balanced_test = as.integer(table(test_df$y)))
 rm(X_test) # clean-up space
 
 
@@ -204,17 +210,16 @@ train_df <- downSample(x = train_df[,-2], y = factor(train_df$y)) %>%
   mutate(y = as.numeric(Class) -1) %>% 
   select(y, everything(), -Class)
 
-samp_df <- bind_cols(samp_df, over_und_train = as.integer(table(train_df$y)))
+samp_df <- bind_cols(samp_df, balanced_train = as.integer(table(train_df$y)))
 rm(X_train)
 
 # Show table with pre/post class balancing techniques
 kable(samp_df)
-
 ```
 
 ```{r model}
 # Create model
-batch_size <- 256 # Large batch size due to big # of images
+batch_size <- 50 # Large batch size due to big # of images
 epochs <- 40 
 num_classes <- 1 # No one-hot encoding, for OHE num_class = 2 (binary)
 
@@ -226,19 +231,21 @@ model <- keras_model_sequential()
 # are included with a subsequent dropout rate of 50%
 # Output layer has sigmoid activation for binary
 # Input shape is (50,50,3) arrays
+
 model %>% layer_conv_2d(filters = 32, kernel_size = c(3,3), 
                         activation = "relu", input_shape = c(50, 50, 3)) %>% 
-          layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+          layer_max_pooling_2d(pool_size = c(2,2)) %>% 
           layer_conv_2d(64, kernel_size = c(3, 3), activation = "relu") %>% 
-          layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+          layer_max_pooling_2d(pool_size = c(2, 2)) %>%
           layer_conv_2d(128, kernel_size = c(3, 3), activation = "relu") %>%
-          layer_conv_2d(256, kernel_size = c(3, 3), activation = "relu") %>%
-          layer_flatten() %>% 
+          layer_conv_2d(256, kernel_size = c(3, 3), activation = "relu") %>% 
+          layer_flatten() %>%
           layer_dropout(rate = 0.5) %>% 
-          layer_dense(128, activation = "relu") %>% 
+          layer_dense(128, activation = "relu") %>%
           layer_dropout(rate = 0.5) %>% 
           layer_dense(128, activation = "relu") %>%
           layer_dense(num_classes, activation = "sigmoid")
+
 
 # Output model summary
 summary(model)
@@ -360,26 +367,30 @@ train_generator <- flow_images_from_directory(directory = file.path(here(), subd
                                               generator = datagen,
                                               target_size = c(50, 50),
                                               batch_size = batch_size,
-                                              class_mode = "binary", seed = 2)
+                                              class_mode = "binary", interpolation = "bicubic",
+                                              seed = 2)
 
 test_generator <- flow_images_from_directory(directory = file.path(here(), subdir, "TEST"), 
                                               generator = datagen,
                                               target_size = c(50, 50),
                                               batch_size = batch_size,
-                                              class_mode = "binary", seed = 2)
+                                              class_mode = "binary", interpolation = "bicubic",
+                                             seed = 2)
 
 # Clean-up space in memory
 rm(X_train_reshape)
 rm(X_test_reshape)
 ```
 
-```{r model_fit}
+```{r model_fit, cache=TRUE}
+
 # Fit CNN
 hist <- model %>%
   fit_generator(train_generator,
                 epochs = epochs,
                 steps_per_epoch = as.integer(nrow(train_df)/batch_size),
                 validation_data = test_generator,
+                validation_steps = as.integer(nrow(test_df)/batch_size),
                 verbose = 1,
                 callbacks = list(model_checkpoint))
 
