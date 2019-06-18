@@ -55,6 +55,8 @@ files_to_keep <- 35000
 
 ```
 
+### 2. Pre-processing  
+  
 After the files to analyze are selected some further processing must happen given some patches are not the correct dimensions needed for analysis - 50x50x3 - where 50x50 is the pixel dimensions and 3 refers to a RGB color spectrum (e.g. for black and white you'd see a 50x50x1).  
 
 This task is done via the `process_images` custom function. It first lists the files in `data_idc`, splits them into malignant vs benign based on the filename terminations (i.e. "...class0"" for benign or "...class1" for malignant). Then the images are read one at a time, reshaped into 50x50x3 arrays with normalized pixel values between 0 and 1. Afterward it stores the image classification as `0` or `1` depending on the whether the processed image was benign or malignant, respectively.
@@ -115,6 +117,8 @@ x_y <- process_images(1,length(image_patches))
 
 ```
 
+### 3. Class balancing  
+  
 Now that we have all the data we must check for class imbalance (i.e. if the number of 0s and 1s are the same or not). This is important to reduce model bias since data imbalance can cause the model to incorrectly classify the minority class and the majority class (i.e. classify malignant as benign).  
   
 From the table below we can observe there are more benign cases in our subset. We will address this later using an R package.
@@ -152,7 +156,7 @@ rm(X, Y, x_y, class_one,
 
 Now to tackle the class imbalance we will use the `caret` R-package. However, the function we will use doesn't take in an multidimensional array (e.g. 50x50x3) and instead takes an `n`x`m` table/matrix. Therefore, we must flatten the arrays into 1 x `m` rows and stack them together.  
 
-```{r}
+```{r, warning=FALSE}
 # First reshape matrices to feed into function to
 # tackle imbalance
 nobs_train <- dim(X_train)[1]
@@ -172,7 +176,7 @@ X_test  <- array_reshape(X_test,
 
 This process is done for both the train (`train_df`) and test data (`test_df`). In our case we will want to undersample the majority class (i.e. benign). Using the `downSample` function from the `caret` package we're able to tackle the class imbalance issues.   
   
-The table below demonstrates the differences between pre- and post- class balancing using the `downSample` function. As one can observe the function under samples the majority class and makes the classes balanced (ie. same number of 0s and 1s).
+The table below demonstrates the differences between pre- and post- class balancing using the `downSample` function. As one can observe the `downSample` function under samples the majority class and makes the classes balanced (ie. same number of 0s and 1s).
 
 ```{r imbalance}
 # Tackle imbalance but store pre- and post downsampling to
@@ -217,11 +221,17 @@ rm(X_train)
 kable(samp_df)
 ```
 
+### 4. Model  
+  
+After balancing the classes we move to creating the model architecture. Similar to the Xrays example, here we use a sequential model that includes convolutional layers, max pooling layers, drop-out layers and fully connected layers.  
+
+The overall architecture is composed of ReLU activated layers, starting with a 32 neurons layer and kernel size of 3x3, followed by a max pooling layer with a pool size  of 2x2. Then another layer with 64 neurons and same kernel followed by another max pooling layer. Subsequent layers with increasing number of neurons - 128 and 256. Afterward we need flatten the 3D feature map into a 1D feature vectors before including it in the fully connected layers with 128 neurons. In between these fully connected layers there are two drop out layers with a drop out rate of 50\% which means half of the neurons will be turned off at random. The final output layer is a dense layer with `num_classes = 1` since the classes are not one-hot encoded (for one hot encode the num of classes would be 2 for binary outcomes).  
+
 ```{r model}
 # Create model
 batch_size <- 50 # Large batch size due to big # of images
 epochs <- 40 
-num_classes <- 1 # No one-hot encoding, for OHE num_class = 2 (binary)
+num_classes <- 1 # One-hot encoding, for OHE num_class = 2 (binary)
 
 # Set up sequential model
 model <- keras_model_sequential()
@@ -251,6 +261,11 @@ model %>% layer_conv_2d(filters = 32, kernel_size = c(3,3),
 summary(model)
 ```
 
+### 5. Compiling the Model  
+  
+Next we compile the model using the built-in Adam optimizer as before (`optimizer_adam`). There are many other gradient descent optimizers in `keras` but here we will use Adam as an example with commonly used settings. However, we reduced the learning rate (`lr`) to allow for transfer learning as shown below. The type of loss used is `binary_crossentropy` since there are only 2 classes - malignant and benign.  
+  
+  
 ```{r compile}
 # Compile model with Adama SGD optimizer with a small learning rate
 # binarry cross entropy loss and saving accuracy
@@ -260,6 +275,10 @@ model %>% compile(optimizer = optimizer_adam(lr = 0.00001),
 
 
 ```
+
+### 6. Data Augmentation  
+  
+Since deep learning tends to work better as we get more data due to the fact that we need to train the neural network's weights. This is especially important in this case since there is **no transfer learning** involved. Using the keras built-in `image_data_generator` we can generate more images with different configurations such as rotations, flips and featurewise normalization/centering.  
 
 ```{r data augmentation}
 # Data augmentation that includes vertical/horizontal flips
@@ -273,6 +292,10 @@ datagen <- image_data_generator(featurewise_center = TRUE,
 
 
 ```
+
+
+### 7. Model Checkpoints 
+Additionally, `keras` allows us to set callbacks to monitor wether the model is learning after each epoch and also store the best model so far so that we don't have to re-run the model training if we were to use it to predict a class in the future.  
 
 ```{r callback-fcns}
 # Set callbacks functions that are helpful to monitor CNN fit
@@ -293,6 +316,12 @@ model_checkpoint <- callback_model_checkpoint(best_model_path,
                                               save_best_only = TRUE)
 
 ```
+
+
+### 8. Saving Images for Fit Optimization   
+  
+Although this step isn't necessary as `keras` can process data from memory, it is an efficient step to optimize the model training when higher throughput computing resources aren't available (e.g. personal laptop). Thus, we save the train and test images into local folders, and clean-up some memory space to avoid a memory over-run.  
+
 
 ```{r save_imgs_2_dir}
 
@@ -357,6 +386,11 @@ if (!dir.exists(file.path(here(), subdir, "TEST"))){
 
 ```
 
+### 9. Pre-model train  
+  
+Prior to training the model we need to specify the directories from which the data augmentation object will take the train and test images, and then feed these to the neural network.   
+  
+
 ```{r datage_test_train}
 # Set up train/test data generator object via datagen
 # specified above
@@ -382,6 +416,11 @@ rm(X_train_reshape)
 rm(X_test_reshape)
 ```
 
+
+### 10. Model Fit  
+  
+Finally, the model is fit using the above train and test data augmentation generators over 40 epochs. This process takes several hours if not Rstudio `cache` file is found in the local folder. Additionally, the model callback functions save the best model to a file called `best_model.h5` which is a `keras` specific file type that can be loaded in any other Rstudio instance without having to re-train a model.  
+
 ```{r model_fit, cache=TRUE}
 
 # Fit CNN
@@ -396,9 +435,14 @@ hist <- model %>%
 
 ```
 
-```{r plot_metrics}
+### 11. Model Performance and Deep Learning Limitations  
+Finally, after running the model we can see that in this case the model doesn't seem to be learning and is overfitting. The overall accuracy seems to be increasing for the training set (max accuracy of approx 75\%) but not for the validation (test) set, which remains roughly at 50\%. This is a clear example of one of the big limitations of deep learning.  
+
+For a neural network to learn sometimes we need to increase the amount of training data or modify the structure of our network. Other possible fixes are potentially increasing the number of epochs, changing the batch size per epoch or increasing/reducing the learning rate. Overall, this is complex problem to solve that is more an art than a precise science - thus it must undergo through a lot of trail and error.  
+
+```{r plot_metrics, warning=FALSE}
 #Save accuracy/loss metrics as dataframe
-hist_df <- hist$metrics %>% as_data_frame()
+hist_df <- hist$metrics %>% as_tibble()
 
 # Use generic plot function to plot accuracy/loss metrics in ggplot
 plot(hist)
