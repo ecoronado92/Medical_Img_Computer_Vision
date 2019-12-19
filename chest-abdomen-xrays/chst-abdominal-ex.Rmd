@@ -30,7 +30,9 @@ extract_imgs(data_dir, zip_file) # Helper script
  _Example and code based on:_  
  Lakhani, Paras, et al. **"Hello world deep learning in medical imaging."** _Journal of digital imaging_ 31.3 (2018): 283-289.
  
-#### Click here [similar example for tumor stain classification](https://ecoronado92.github.io/portfolio/invasive-carcinoma-ex.html)
+#### Git repo [found here](https://github.com/ecoronado92/Medical_Img_Computer_Vision)
+#### Click here for [similar example for tumor stain classification](https://ecoronado92.github.io/portfolio/invasive-carcinoma-ex.html)
+
 
 ### I. Building the Model 
 
