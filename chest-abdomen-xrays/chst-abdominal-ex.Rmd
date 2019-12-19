@@ -2,11 +2,14 @@
 title: "Classification of Chest/Abdominal X-Rays via CNN"
 author: "Eduardo Coronado"
 date: "5/13/2019"
-output: html_document
+output:
+  rmdformats::readthedown:
+    theme: sandstone
+    highlight: tango
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 suppressMessages(library(tidyverse))
 library(keras)
 library(here)
@@ -26,6 +29,8 @@ extract_imgs(data_dir, zip_file) # Helper script
 
  _Example and code based on:_  
  Lakhani, Paras, et al. **"Hello world deep learning in medical imaging."** _Journal of digital imaging_ 31.3 (2018): 283-289.
+ 
+#### Click here [similar example for tumor stain classification](https://ecoronado92.github.io/portfolio/invasive-carcinoma-ex.html)
 
 ### I. Building the Model 
 
