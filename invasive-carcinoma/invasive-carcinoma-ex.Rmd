@@ -2,7 +2,10 @@
 title: "Predicting Ductal Invasive Carcinomas via CNN"
 author: "Eduardo Coronado"
 date: "5/22/2019"
-output: html_document
+output:
+  rmdformats::readthedown:
+    theme: sandstone
+    highlight: tango
 ---
 
 ```{r setup, include=FALSE}
@@ -26,11 +29,6 @@ set.seed(1)
 
 * Choosehappy. “Use Case 6: Invasive Ductal Carcinoma (IDC) Segmentation.” Andrew Janowczyk, 5 Jan. 2018, www.andrewjanowczyk.com/use-case-6-invasive-ductal-carcinoma-idc-segmentation/. 
   
-#### **Before starting the exercise**  
-If you'd like to quickly knit an example using pre-computed data please download and unzip the files found in [**this link**](https://duke.box.com/s/4ouru5cu3b9sg7bn375st7m2nhfrkdyt).  
-  
-Otherwise, uncomment the line with the `extract_carcinoma_data` helper function.  
-This will take a couple of hour to run but will generate both the data and cache files for easy tuning of the model if needed.  
   
 ### 1. Dataset  
 The original data set consists of 162 whole mount slide images from breast cancer samples that were scanned at 40x. However, since this whole mounts cannot be easily processed or analyzed without some pre-processing they were segmented into 50px x 50px patches to generate almost 300,000 image files (1.6 Gb) - 60\% classified as benign and 40\% as malignant.  
@@ -51,7 +49,7 @@ files_to_keep <- 35000
 # Helper function that downloads original data,
 # extracts necessary data and stores it in respective folder
 
-# extract_carcinoma_data(subdir, train_dir, test_dir, files_to_keep )
+extract_carcinoma_data(subdir, train_dir, test_dir, files_to_keep )
 
 ```
 
